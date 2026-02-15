@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -208,6 +209,9 @@ void TextEditor::render(const char* title, const ImVec2& size, bool border) {
 
 	// render find/replace popup
 	renderFindReplace(pos, visibleSize.x - verticalScrollBarSize);
+
+	// render autocomplete popup
+	renderAutoComplete(pos);
 
 	ImGui::EndChild();
 	ImGui::PopStyleColor();
@@ -838,6 +842,35 @@ void TextEditor::handleKeyboardInputs() {
 		auto isOptionalCtrlShift = !alt;
 	#endif
 
+		// autocomplete navigation (must intercept keys before normal handlers)
+		if (autoCompleteVisible) {
+			if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+				dismissAutoComplete();
+				return;
+			} else if (isNoModifiers && ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
+				if (autoCompleteSelectedIndex > 0) autoCompleteSelectedIndex--;
+				return;
+			} else if (isNoModifiers && ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
+				if (autoCompleteSelectedIndex < static_cast<int>(autoCompleteSuggestions.size()) - 1)
+					autoCompleteSelectedIndex++;
+				return;
+			} else if (isNoModifiers && (ImGui::IsKeyPressed(ImGuiKey_Tab) ||
+			           ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))) {
+				acceptAutoComplete();
+				return;
+			} else if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_RightArrow) ||
+			           ImGui::IsKeyPressed(ImGuiKey_Home) || ImGui::IsKeyPressed(ImGuiKey_End)) {
+				dismissAutoComplete();
+				// fall through to normal handling
+			}
+		}
+
+		// Ctrl+Space to trigger autocomplete
+		if (!readOnly && isShortcut && ImGui::IsKeyPressed(ImGuiKey_Space)) {
+			updateAutoComplete();
+			return;
+		}
+
 		// cursor movements and selections
 		if (isOptionalShift && ImGui::IsKeyPressed(ImGuiKey_UpArrow)) { moveUp(1, shift); }
 		else if (isOptionalShift && ImGui::IsKeyPressed(ImGuiKey_DownArrow)) { moveDown(1, shift); }
@@ -878,8 +911,8 @@ void TextEditor::handleKeyboardInputs() {
 		else if (!readOnly && isShortcut && ImGui::IsKeyPressed(ImGuiKey_Y)) { redo(); }
 
 		// remove text
-		else if (!readOnly && isOptionalAlt && ImGui::IsKeyPressed(ImGuiKey_Delete)) { handleDelete(alt); }
-		else if (!readOnly && isOptionalAlt && ImGui::IsKeyPressed(ImGuiKey_Backspace)) { handleBackspace(alt); }
+		else if (!readOnly && isOptionalAlt && ImGui::IsKeyPressed(ImGuiKey_Delete)) { handleDelete(alt); updateAutoComplete(); }
+		else if (!readOnly && isOptionalAlt && ImGui::IsKeyPressed(ImGuiKey_Backspace)) { handleBackspace(alt); updateAutoComplete(); }
 		else if (!readOnly && isShiftShortcut && ImGui::IsKeyPressed(ImGuiKey_K)) { removeSelectedLines(); }
 
 		// text manipulation
@@ -928,6 +961,11 @@ void TextEditor::handleKeyboardInputs() {
 			}
 
 			io.InputQueueCharacters.resize(0);
+
+			// update autocomplete after text input
+			if (!completionKeywords.empty() || (language && !language->keywords.empty())) {
+				updateAutoComplete();
+			}
 		}
 	}
 }
@@ -938,6 +976,11 @@ void TextEditor::handleKeyboardInputs() {
 //
 
 void TextEditor::handleMouseInteractions() {
+	// dismiss autocomplete on mouse click
+	if (autoCompleteVisible && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+		dismissAutoComplete();
+	}
+
 	// handle middle mouse button modes
 	panning &= panMode && ImGui::IsMouseDown(ImGuiMouseButton_Middle);
 	auto absoluteMousePos = ImGui::GetMousePos() - ImGui::GetWindowPos();
@@ -6262,6 +6305,178 @@ static bool isCStylePunctuation(ImWchar character) {
 	};
 
 	return character < 127 ? punctuation[character] : false;
+}
+
+
+//
+//	TextEditor::dismissAutoComplete
+//
+
+void TextEditor::dismissAutoComplete() {
+	autoCompleteVisible = false;
+	autoCompleteSuggestions.clear();
+	autoCompleteSelectedIndex = 0;
+}
+
+
+//
+//	TextEditor::updateAutoComplete
+//
+
+void TextEditor::updateAutoComplete() {
+	if (readOnly || cursors.hasMultiple()) {
+		dismissAutoComplete();
+		return;
+	}
+
+	auto cursorPos = cursors.getCurrent().getInteractiveEnd();
+	auto wordStart = document.findWordStart(cursorPos);
+
+	if (wordStart == cursorPos) {
+		dismissAutoComplete();
+		return;
+	}
+
+	auto prefix = document.getSectionText(wordStart, cursorPos);
+	if (prefix.empty()) {
+		dismissAutoComplete();
+		return;
+	}
+
+	// case-insensitive comparison
+	std::string lowerPrefix = prefix;
+	std::transform(lowerPrefix.begin(), lowerPrefix.end(), lowerPrefix.begin(),
+		[](unsigned char c) { return std::tolower(c); });
+
+	autoCompleteWordStart = wordStart;
+	autoCompleteSuggestions.clear();
+
+	auto addMatches = [&](const auto& container) {
+		for (const auto& word : container) {
+			std::string lowerWord = word;
+			std::transform(lowerWord.begin(), lowerWord.end(), lowerWord.begin(),
+				[](unsigned char c) { return std::tolower(c); });
+			if (lowerWord.starts_with(lowerPrefix) && lowerWord != lowerPrefix) {
+				if (std::find(autoCompleteSuggestions.begin(), autoCompleteSuggestions.end(), word)
+					== autoCompleteSuggestions.end()) {
+					autoCompleteSuggestions.push_back(word);
+				}
+			}
+		}
+	};
+
+	if (language) {
+		addMatches(language->keywords);
+		addMatches(language->identifiers);
+	}
+	addMatches(completionKeywords);
+
+	std::sort(autoCompleteSuggestions.begin(), autoCompleteSuggestions.end(),
+		[](const std::string& a, const std::string& b) {
+			return std::lexicographical_compare(
+				a.begin(), a.end(), b.begin(), b.end(),
+				[](char ca, char cb) { return std::tolower(ca) < std::tolower(cb); });
+		});
+
+	if (!autoCompleteSuggestions.empty()) {
+		autoCompleteVisible = true;
+		autoCompleteSelectedIndex = 0;
+	} else {
+		dismissAutoComplete();
+	}
+}
+
+
+//
+//	TextEditor::acceptAutoComplete
+//
+
+void TextEditor::acceptAutoComplete() {
+	if (!autoCompleteVisible || autoCompleteSelectedIndex < 0 ||
+		autoCompleteSelectedIndex >= static_cast<int>(autoCompleteSuggestions.size())) {
+		return;
+	}
+
+	const auto& suggestion = autoCompleteSuggestions[autoCompleteSelectedIndex];
+	auto cursorPos = cursors.getCurrent().getInteractiveEnd();
+
+	auto transaction = startTransaction();
+	deleteText(transaction, autoCompleteWordStart, cursorPos);
+	auto cursor = cursors.getCurrentAsIterator();
+	cursors.adjustForDelete(cursor, autoCompleteWordStart, cursorPos);
+	auto end = insertText(transaction, autoCompleteWordStart, suggestion);
+	cursor->update(end, false);
+	cursors.adjustForInsert(cursor, autoCompleteWordStart, end);
+	endTransaction(transaction);
+
+	makeCursorVisible();
+	dismissAutoComplete();
+}
+
+
+//
+//	TextEditor::renderAutoComplete
+//
+
+void TextEditor::renderAutoComplete(ImVec2 pos) {
+	if (!autoCompleteVisible || autoCompleteSuggestions.empty()) return;
+
+	auto cursorCoord = cursors.getCurrent().getInteractiveEnd();
+	auto currentScreenPosition = ImGui::GetCursorScreenPos();
+
+	// position below cursor
+	float cursorX = textOffset + cursorCoord.column * glyphSize.x;
+	float cursorY = (cursorCoord.line - firstVisibleLine + 1) * glyphSize.y;
+
+	// sizing
+	float itemHeight = ImGui::GetTextLineHeightWithSpacing();
+	int maxVisible = std::min(static_cast<int>(autoCompleteSuggestions.size()), 8);
+	float popupHeight = maxVisible * itemHeight + 8.0f;
+
+	float maxWidth = 150.0f;
+	for (const auto& s : autoCompleteSuggestions) {
+		float w = ImGui::CalcTextSize(s.c_str()).x + 20.0f;
+		if (w > maxWidth) maxWidth = w;
+	}
+	maxWidth = std::min(maxWidth, 350.0f);
+
+	ImVec2 popupPos(pos.x + cursorX, pos.y + cursorY);
+
+	// flip above cursor if near bottom
+	if (popupPos.y + popupHeight > ImGui::GetIO().DisplaySize.y) {
+		popupPos.y = pos.y + (cursorCoord.line - firstVisibleLine) * glyphSize.y - popupHeight;
+	}
+	if (popupPos.x + maxWidth > ImGui::GetIO().DisplaySize.x) {
+		popupPos.x = ImGui::GetIO().DisplaySize.x - maxWidth;
+	}
+
+	ImGui::SetNextWindowPos(popupPos);
+	ImGui::SetNextWindowSize(ImVec2(maxWidth, popupHeight));
+	ImGui::SetNextWindowBgAlpha(0.95f);
+
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 2));
+
+	ImGui::BeginChild("##autocomplete", ImVec2(maxWidth, popupHeight), ImGuiChildFlags_Borders);
+
+	for (int i = 0; i < static_cast<int>(autoCompleteSuggestions.size()); i++) {
+		bool isSelected = (i == autoCompleteSelectedIndex);
+
+		if (ImGui::Selectable(autoCompleteSuggestions[i].c_str(), isSelected)) {
+			autoCompleteSelectedIndex = i;
+			acceptAutoComplete();
+		}
+
+		if (isSelected) {
+			ImGui::SetItemDefaultFocus();
+			ImGui::SetScrollHereY();
+		}
+	}
+
+	ImGui::EndChild();
+	ImGui::PopStyleVar(2);
+
+	ImGui::SetCursorScreenPos(currentScreenPosition);
 }
 
 

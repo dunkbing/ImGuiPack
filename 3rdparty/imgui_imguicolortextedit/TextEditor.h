@@ -382,6 +382,10 @@ public:
 	bool HasLanguage() const { return language != nullptr; }
 	std::string GetLanguageName() const { return language == nullptr ? "None" : language->name; }
 
+	// autocomplete support
+	void SetCompletionKeywords(const std::vector<std::string>& keywords) { completionKeywords = keywords; }
+	void ClearCompletionKeywords() { completionKeywords.clear(); dismissAutoComplete(); }
+
 	// support functions for unicode codepoints
 	class CodePoint {
 	public:
@@ -866,6 +870,10 @@ protected:
 	void renderScrollbarMiniMap();
 	void renderPanScrollIndicator();
 	void renderFindReplace(ImVec2 pos, float width);
+	void renderAutoComplete(ImVec2 pos);
+	void updateAutoComplete();
+	void acceptAutoComplete();
+	void dismissAutoComplete();
 
 	// keyboard and mouse interactions
 	void handleKeyboardInputs();
@@ -1037,6 +1045,13 @@ protected:
 	bool scrolling = false;
 	ImVec2 scrollStart;
 	bool showPanScrollIndicator = true;
+
+	// autocomplete state
+	bool autoCompleteVisible = false;
+	int autoCompleteSelectedIndex = 0;
+	std::vector<std::string> autoCompleteSuggestions;
+	std::vector<std::string> completionKeywords;
+	Coordinate autoCompleteWordStart;
 
 	// color palette support
 	void updatePalette();
