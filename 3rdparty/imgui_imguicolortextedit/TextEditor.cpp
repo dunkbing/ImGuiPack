@@ -679,6 +679,8 @@ void TextEditor::renderFindReplace(ImVec2 pos, float width) {
 
 		// calculate sizes
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6.0f, 4.0f));
+		ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+		ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
 		auto& style = ImGui::GetStyle();
 		auto fieldWidth = 250.0f;
 
@@ -711,8 +713,30 @@ void TextEditor::renderFindReplace(ImVec2 pos, float width) {
 			pos.y + style.ItemSpacing.y * 2.0f));
 
 		ImGui::SetNextWindowSize(ImVec2(windowWidth, windowHeight));
-		ImGui::SetNextWindowBgAlpha(0.75f);
+		ImGui::SetNextWindowBgAlpha(0.95f);
 
+		// Derive dialog colors from the editor palette so they stay in sync with the theme
+		const ImVec4 palText = ImGui::ColorConvertU32ToFloat4(palette.get(Color::text));
+		const ImVec4 palBg   = ImGui::ColorConvertU32ToFloat4(palette.get(Color::background));
+		const ImVec4 palSel  = ImGui::ColorConvertU32ToFloat4(palette.get(Color::selection));
+		const ImVec4 frameBg = ImVec4(
+			palBg.x + (palText.x - palBg.x) * 0.08f,
+			palBg.y + (palText.y - palBg.y) * 0.08f,
+			palBg.z + (palText.z - palBg.z) * 0.08f,
+			1.0f);
+		const ImVec4 frameBgHovered = ImVec4(
+			palBg.x + (palText.x - palBg.x) * 0.12f,
+			palBg.y + (palText.y - palBg.y) * 0.12f,
+			palBg.z + (palText.z - palBg.z) * 0.12f,
+			1.0f);
+
+		ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(palText.x, palText.y, palText.z, 0.3f));
+		ImGui::PushStyleColor(ImGuiCol_Text, palText);
+		ImGui::PushStyleColor(ImGuiCol_InputTextCursor, palText);
+		ImGui::PushStyleColor(ImGuiCol_FrameBg, frameBg);
+		ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, frameBgHovered);
+		ImGui::PushStyleColor(ImGuiCol_FrameBgActive, frameBgHovered);
+		ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, palSel);
 		ImGui::BeginChild("find-replace", ImVec2(windowWidth, windowHeight), ImGuiChildFlags_Borders);
 		ImGui::SetNextItemWidth(fieldWidth);
 
@@ -802,7 +826,8 @@ void TextEditor::renderFindReplace(ImVec2 pos, float width) {
 		}
 
 		ImGui::EndChild();
-		ImGui::PopStyleVar();
+		ImGui::PopStyleColor(7); // TextSelectedBg, FrameBgActive, FrameBgHovered, FrameBg, InputTextCursor, Text, Border
+		ImGui::PopStyleVar(3);   // FrameBorderSize, ChildBorderSize, ItemSpacing
 		ImGui::SetCursorScreenPos(currentScreenPosition);
 	}
 }
